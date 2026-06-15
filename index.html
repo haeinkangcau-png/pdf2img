@@ -124,6 +124,38 @@
   .btn-convert:hover { background: var(--accent-hover); }
   .btn-convert:disabled { opacity: 0.4; cursor: not-allowed; }
 
+  .btn-secondary {
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+  }
+  .btn-secondary:hover { border-color: var(--accent); color: #fff; }
+  .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .save-tools {
+    margin-top: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
+
+  #folderPath {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    flex: 1;
+    min-width: 220px;
+  }
+
   /* File list */
   #fileList { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
 
@@ -137,6 +169,14 @@
   .file-icon { font-size: 1.3rem; }
   .file-name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-size { font-size: 0.8rem; color: var(--text-muted); }
+  .file-pages {
+    font-size: 0.78rem;
+    color: var(--accent);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2px 8px;
+    line-height: 1.4;
+  }
   .file-remove {
     background: none; border: none; color: var(--text-muted); cursor: pointer;
     font-size: 1.1rem; padding: 2px 6px; border-radius: 4px;
@@ -237,6 +277,12 @@
     <button class="btn-convert" id="convertBtn" disabled>Convert</button>
   </div>
 
+  <div class="save-tools">
+    <button class="btn-secondary" id="pickFolderBtn">Choose Save Folder</button>
+    <button class="btn-secondary" id="saveAllBtn" disabled>Save All Converted Images</button>
+    <div id="folderPath">No folder selected. Browser download fallback is still available.</div>
+  </div>
+
   <!-- File cards -->
   <div id="fileList"></div>
 
@@ -255,12 +301,16 @@ let files = [];       // { file, id }
 let fmt = 'png';
 let quality = 0.92;
 let scale = 2;
+let directoryHandle = null;
 
 // ── Elements ────────────────────────────────────────────
 const dropzone    = document.getElementById('dropzone');
 const fileInput   = document.getElementById('fileInput');
 const fileList    = document.getElementById('fileList');
 const convertBtn  = document.getElementById('convertBtn');
+const pickFolderBtn = document.getElementById('pickFolderBtn');
+const saveAllBtn  = document.getElementById('saveAllBtn');
+const folderPath  = document.getElementById('folderPath');
 const qualitySlider = document.getElementById('qualitySlider');
 const qualityVal  = document.getElementById('qualityVal');
 const qualityGroup = document.getElementById('qualityGroup');
@@ -284,6 +334,25 @@ qualitySlider.addEventListener('input', () => {
 dpiSelect.addEventListener('change', () => {
   scale = parseInt(dpiSelect.value);
 });
+
+if (!('showDirectoryPicker' in window)) {
+  pickFolderBtn.disabled = true;
+  folderPath.textContent = 'This browser does not support folder save. Use ZIP download buttons instead.';
+}
+
+pickFolderBtn.addEventListener('click', async () => {
+  try {
+    directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    folderPath.textContent = `Selected folder: ${directoryHandle.name}`;
+    updateSaveAllState();
+  } catch (err) {
+    if (err && err.name !== 'AbortError') {
+      alert('Failed to select folder: ' + err.message);
+    }
+  }
+});
+
+saveAllBtn.addEventListener('click', saveAllConvertedToFolder);
 
 // ── Drag & drop ─────────────────────────────────────────
 dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('over'); });
@@ -317,6 +386,7 @@ function renderCard({ file, id }) {
       <span class="file-icon">📄</span>
       <span class="file-name" title="${file.name}">${file.name}</span>
       <span class="file-size">${(file.size / 1024 / 1024).toFixed(2)} MB</span>
+      <span class="file-pages" id="pages-${id}">?</span>
       <button class="file-remove" data-id="${id}" title="Remove">✕</button>
     </div>
     <div class="progress-bar-wrap" id="prog-${id}"><div class="progress-bar" id="bar-${id}"></div></div>
@@ -328,8 +398,12 @@ function renderCard({ file, id }) {
 
   card.querySelector('.file-remove').addEventListener('click', () => {
     files = files.filter(f => f.id !== id);
+    if (window._blobs && window._blobs[id]) {
+      delete window._blobs[id];
+    }
     card.remove();
     convertBtn.disabled = files.length === 0;
+    updateSaveAllState();
   });
 
   card.querySelector(`#dlall-${id}`).addEventListener('click', () => downloadZip(id));
@@ -348,18 +422,22 @@ async function convertFile({ file, id }) {
   const statusEl  = document.getElementById(`status-${id}`);
   const progWrap  = document.getElementById(`prog-${id}`);
   const bar       = document.getElementById(`bar-${id}`);
+  const pagesEl   = document.getElementById(`pages-${id}`);
   const previewEl = document.getElementById(`preview-${id}`);
   const dlAllBtn  = document.getElementById(`dlall-${id}`);
 
   previewEl.innerHTML = '';
   progWrap.style.display = 'block';
+  bar.style.width = '0%';
   statusEl.className = 'file-status';
-  statusEl.textContent = 'Loading PDF…';
+  statusEl.textContent = 'Loading PDF and counting pages…';
 
   try {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     const total = pdf.numPages;
+    pagesEl.textContent = `${total}p`;
+    statusEl.textContent = `Found ${total} page${total > 1 ? 's' : ''}. Starting render…`;
 
     // Store blobs for ZIP
     window._blobs = window._blobs || {};
@@ -402,6 +480,7 @@ async function convertFile({ file, id }) {
     statusEl.className = 'file-status done';
     statusEl.textContent = `✓ ${total} page${total > 1 ? 's' : ''} converted`;
     dlAllBtn.style.display = 'block';
+    updateSaveAllState();
 
   } catch (err) {
     statusEl.className = 'file-status error';
@@ -446,6 +525,74 @@ async function downloadZip(id) {
 
   btn.textContent = '⬇ Download all pages as ZIP';
   btn.disabled = false;
+}
+
+function hasConvertedOutput() {
+  if (!window._blobs) return false;
+  return Object.values(window._blobs).some(list => Array.isArray(list) && list.length > 0);
+}
+
+function updateSaveAllState() {
+  saveAllBtn.disabled = !(directoryHandle && hasConvertedOutput());
+}
+
+function sanitizeFolderName(name) {
+  return name
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function ensureReadWritePermission(handle) {
+  const options = { mode: 'readwrite' };
+  if ((await handle.queryPermission(options)) === 'granted') return true;
+  return (await handle.requestPermission(options)) === 'granted';
+}
+
+async function saveAllConvertedToFolder() {
+  if (!directoryHandle) {
+    alert('Please choose a save folder first.');
+    return;
+  }
+
+  if (!hasConvertedOutput()) {
+    alert('No converted images found. Convert at least one PDF first.');
+    return;
+  }
+
+  const hasPermission = await ensureReadWritePermission(directoryHandle);
+  if (!hasPermission) {
+    alert('Folder write permission was not granted.');
+    return;
+  }
+
+  saveAllBtn.disabled = true;
+  const originalLabel = saveAllBtn.textContent;
+  saveAllBtn.textContent = 'Saving files…';
+
+  try {
+    for (const entry of files) {
+      const blobs = window._blobs?.[entry.id];
+      if (!blobs || blobs.length === 0) continue;
+
+      const baseName = sanitizeFolderName(entry.file.name.replace(/\.pdf$/i, '')) || 'pdf_images';
+      const subDir = await directoryHandle.getDirectoryHandle(baseName, { create: true });
+
+      for (const { blob, name } of blobs) {
+        const fileHandle = await subDir.getFileHandle(name, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      }
+    }
+
+    alert('All converted images were saved to the selected folder.');
+  } catch (err) {
+    alert('Saving failed: ' + err.message);
+  }
+
+  saveAllBtn.textContent = originalLabel;
+  updateSaveAllState();
 }
 </script>
 </body>
