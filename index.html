@@ -450,6 +450,7 @@ async function convertFile({ file, id }) {
     // Store blobs for ZIP
     window._blobs = window._blobs || {};
     window._blobs[id] = [];
+    let totalBytes = 0;
 
     for (let p = 1; p <= total; p++) {
       statusEl.textContent = `Rendering page ${p} / ${total}…`;
@@ -470,6 +471,8 @@ async function convertFile({ file, id }) {
 
       const blob = await new Promise(res => canvas.toBlob(res, mimeType, quality));
       const url  = URL.createObjectURL(blob);
+      const sizeLabel = formatBytes(blob.size);
+      totalBytes += blob.size;
       window._blobs[id].push({ blob, name: pageName });
 
       // Thumbnail
@@ -477,7 +480,7 @@ async function convertFile({ file, id }) {
       thumb.className = 'preview-item';
       thumb.innerHTML = `
         <img src="${url}" alt="page ${p}" loading="lazy" />
-        <span>Page ${p}</span>
+        <span>Page ${p} · ${sizeLabel}</span>
         <a class="dl-link" href="${url}" download="${pageName}">⬇ Save</a>
       `;
       previewEl.appendChild(thumb);
@@ -486,7 +489,7 @@ async function convertFile({ file, id }) {
     }
 
     statusEl.className = 'file-status done';
-    statusEl.textContent = `✓ ${total} page${total > 1 ? 's' : ''} converted`;
+    statusEl.textContent = `✓ ${total} page${total > 1 ? 's' : ''} converted · ${formatBytes(totalBytes)}`;
     dlAllBtn.style.display = 'block';
     updateSaveAllState();
 
@@ -538,6 +541,19 @@ async function downloadZip(id) {
 function hasConvertedOutput() {
   if (!window._blobs) return false;
   return Object.values(window._blobs).some(list => Array.isArray(list) && list.length > 0);
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let val = bytes;
+  let idx = 0;
+  while (val >= 1024 && idx < units.length - 1) {
+    val /= 1024;
+    idx += 1;
+  }
+  const digits = idx === 0 ? 0 : (val < 10 ? 2 : 1);
+  return `${val.toFixed(digits)} ${units[idx]}`;
 }
 
 function updateSaveAllState() {
